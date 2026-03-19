@@ -31,4 +31,4 @@ build/
 
 ### VS Code ###
 .vscode/
-src/main/resources/credentials.json
+src/main/resources/credentials.json.DS_Store
