@@ -1,5 +1,7 @@
 package com.scamguardja.controller;
 
+import com.scamguardja.model.AiAnalysisResult;
+import com.scamguardja.service.AiDetectionService;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.*;
@@ -8,6 +10,12 @@ import java.util.*;
 @RequestMapping("/scan")
 @CrossOrigin(origins = "*")
 public class EmailController {
+
+    private final AiDetectionService aiDetectionService;
+
+    public EmailController(AiDetectionService aiDetectionService) {
+        this.aiDetectionService = aiDetectionService;
+    }
 
     private final List<String> suspiciousWords = Arrays.asList(
             "urgent",
@@ -103,7 +111,6 @@ public class EmailController {
         if (score > 100) {
             score = 100;
         }
-        
 
         String risk = "LOW";
         if (score >= 60) {
@@ -131,6 +138,12 @@ public class EmailController {
         result.put("recommendation", recommendation);
 
         return result;
+    }
+
+    @PostMapping("/ai")
+    public AiAnalysisResult analyzeWithAi(@RequestBody Map<String, String> body) {
+        String message = body.getOrDefault("message", "");
+        return aiDetectionService.analyze(message);
     }
 
     private List<String> extractLinks(String text) {
