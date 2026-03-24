@@ -1,6 +1,5 @@
 package com.scamguardja.controller;
 
-import com.google.api.services.gmail.Gmail;
 import com.google.api.services.gmail.model.ListMessagesResponse;
 import com.google.api.services.gmail.model.Message;
 import com.scamguardja.model.AiAnalysisResult;
@@ -8,8 +7,8 @@ import com.scamguardja.service.AiDetectionService;
 import com.scamguardja.service.GmailService;
 import com.scamguardja.service.ReportService;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.web.bind.annotation.*;
+import jakarta.servlet.http.HttpSession;
 
 import java.net.URI;
 import java.text.Normalizer;
@@ -20,7 +19,6 @@ import java.util.regex.Pattern;
 @RestController
 public class GmailController {
 
-    private final Gmail gmail;
     private final ReportService reportService;
     private final GmailService gmailService;
     private final AiDetectionService aiDetectionService;
@@ -40,15 +38,19 @@ public class GmailController {
     @Value("${official.domains.firstglobal:}")
     private String firstglobalDomains;
 
-    public GmailController(@Lazy Gmail gmail,
-                           ReportService reportService,
-                           GmailService gmailService,
-                           AiDetectionService aiDetectionService) {
-        this.gmail = gmail;
-        this.reportService = reportService;
-        this.gmailService = gmailService;
-        this.aiDetectionService = aiDetectionService;
-    }
+    @Value("${official.domains.vmbs:}")
+    private String vmbsDomains;
+
+    @Value("${official.domains.jnbank:}")
+    private String jnbankDomains;
+
+    public GmailController(ReportService reportService,
+        GmailService gmailService,
+        AiDetectionService aiDetectionService) {
+            this.reportService = reportService;
+            this.gmailService = gmailService;
+            this.aiDetectionService = aiDetectionService;
+        }
 
     @GetMapping(value = "/gmail/dashboard", produces = "text/html")
     public String dashboardPage() {
@@ -437,6 +439,17 @@ public class GmailController {
                     </div>
 
                     <div class="summary" id="summary"></div>
+
+                    <div class="section-card">
+                        <h2>🧪 Demo Mode</h2>
+                        <p class="muted">Paste a suspicious email or scam message below to test ScamGuard JA instantly.</p>
+                        <textarea id="demoMessage" style="width:100%; min-height:120px; border:none; border-radius:12px; padding:14px; margin-top:10px;">URGENT: Your NCB account has been locked. Verify now at https://ncbelink.com to avoid suspension.</textarea>
+                        <div style="margin-top:12px;">
+                            <button onclick="runDemoScan()">Run Demo Scan</button>
+                        </div>
+                        <div id="demoResult" class="info-box" style="display:none; margin-top:16px;"></div>
+                    </div>
+
                     <div class="emails" id="emails"></div>
 
                     <div id="about-section" class="section-card">
@@ -544,15 +557,28 @@ public class GmailController {
                                     ${email.hasLink ? `<span class="tag">🔗 Contains external link</span>` : ``}
                                     ${email.detectedDomain ? `<span class="tag">🌐 ${email.detectedDomain}</span>` : ``}
                                     ${email.claimedInstitution ? `<span class="tag">🏦 ${email.claimedInstitution}</span>` : ``}
+                                    <span class="tag">${
+                                        email.trustBadge === 'Verified Domain' ? '✅ Verified Domain' :
+                                        email.trustBadge === 'Impersonation Detected' ? '🚨 Impersonation Detected' :
+                                        email.trustBadge === 'No Link Found' ? 'ℹ️ No Link Found' :
+                                        '⚠️ Unverified Domain'
+                                    }</span>
                                     ${email.reasons.map(r => `<span class="tag">${r}</span>`).join('')}
                                 </div>
-
                                 <div style="margin-top:12px;" class="${email.suspicious ? 'status-danger' : 'status-safe'}">
                                     ${email.suspicious ? '⚠️ Phishing Risk Detected' : '✅ Looks Safe'}
                                 </div>
 
                                 <div class="muted" style="margin-top:6px;">Risk score: ${email.riskScore}</div>
-                                <div class="muted">Community reports: ${email.communityReports}</div>
+                                    <div class="muted">Threat level: ${email.threatLevel}</div>
+                                    <div style="margin-top:8px; background:#22365f; border-radius:999px; height:10px; overflow:hidden;">
+                                        <div style="width:${email.threatPercent}%; height:100%; background:${
+                                            email.threatLevel === 'HIGH' ? '#ef4444' :
+                                            email.threatLevel === 'MEDIUM' ? '#f59e0b' :
+                                            '#22c55e'
+                                        };"></div>
+                                </div>
+                                <div class="muted" style="margin-top:8px;">Community reports: ${email.communityReports}</div>
 
                                 <div class="ai-box">
                                     <div>
@@ -564,12 +590,14 @@ public class GmailController {
                                     </div>
                                     <div><strong>AI Confidence:</strong> ${email.aiConfidence}%</div>
                                     <div><strong>AI Category:</strong> ${email.aiCategory}</div>
+                                    <div style="margin-top:8px;"><strong>AI Summary:</strong> ${email.aiSummary}</div>
                                     <div class="muted" style="margin-top:6px;"><strong>AI Explanation:</strong> ${email.aiExplanation}</div>
                                     <div class="muted" style="margin-top:6px;"><strong>AI Recommendation:</strong> ${email.aiRecommendation}</div>
                                     <div style="margin-top:8px;">
                                         ${email.aiIndicators.map(i => `<span class="tag">${i}</span>`).join('')}
                                     </div>
                                 </div>
+                                ${email.wouldBlock ? `<div class="auto-report">🚫 This email would be blocked by ScamGuard JA</div>` : ``}
 
                                 ${email.autoReported ? `<div class="auto-report">🚨 Auto-reported to ScamGuard Security</div>` : ``}
                                 ${email.reported ? `<div class="reported">📨 Already reported</div>` : ``}
@@ -643,8 +671,42 @@ public class GmailController {
                     });
 
                     const data = await res.json();
-                    alert(data.message + "\\nCase ID: " + data.caseId);
-                    loadData(false);
+                    alert("📨 " + data.message + "\\nCase ID: " + data.caseId + "\\nStatus: Submitted to ScamGuard JA Security");                    loadData(false);
+                }
+
+                async function runDemoScan() {
+                    const message = document.getElementById('demoMessage').value.trim();
+
+                    if (!message) {
+                        alert('Paste a message first.');
+                        return;
+                    }
+
+                    try {
+                        const res = await fetch('/scan/ai', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ message })
+                        });
+
+                        const data = await res.json();
+
+                        document.getElementById('demoResult').style.display = 'block';
+                        document.getElementById('demoResult').innerHTML = `
+                            <h3>Demo Result</h3>
+                            <div><strong>AI Verdict:</strong> ${data.verdict}</div>
+                            <div><strong>Confidence:</strong> ${data.confidence}%</div>
+                            <div><strong>Category:</strong> ${data.category}</div>
+                            <div class="muted" style="margin-top:8px;"><strong>Explanation:</strong> ${data.explanation}</div>
+                            <div class="muted" style="margin-top:8px;"><strong>Recommendation:</strong> ${data.recommendation}</div>
+                            <div style="margin-top:10px;">
+                                ${data.indicators.map(i => `<span class="tag">${i}</span>`).join('')}
+                            </div>
+                        `;
+                    } catch (error) {
+                        console.error(error);
+                        alert('Demo scan failed.');
+                    }
                 }
 
                 loadData(true);
@@ -656,9 +718,22 @@ public class GmailController {
     }
 
     @GetMapping("/gmail/data")
-    public Map<String, Object> getInboxData() {
+    public Map<String, Object> getInboxData(HttpSession session) {
         try {
             long startTime = System.currentTimeMillis();
+
+            String userId = (String) session.getAttribute("gmailUserId");
+            System.out.println("Session gmailUserId in /gmail/data = " + userId);
+            System.out.println("Data session id = " + session.getId());
+
+        if (userId == null) {
+            Map<String, Object> error = new HashMap<>();
+            error.put("error", true);
+            error.put("message", "No Gmail session found. Please sign in first.");
+            return error;
+        }
+
+        var gmail = gmailService.buildGmailClient(userId);
 
             List<Message> messages = new ArrayList<>();
             String pageToken = null;
@@ -848,14 +923,18 @@ public class GmailController {
                     email.put("reported", reportService.hasReport(message.getId()));
                     email.put("communityReports", reportService.getCommunityCount(message.getId()));
                     email.put("autoReported", reportService.wasAutoReported(message.getId()));
+                    email.put("trustBadge", getTrustBadge(claimedInstitution, extractedDomain, reasons));
                     email.put("detectedDomain", extractedDomain);
                     email.put("claimedInstitution", claimedInstitution);
-
+                    email.put("wouldBlock", shouldSimulateBlock(riskScore, aiResult.getVerdict()));
+                    email.put("threatLevel", getThreatLevelLabel(riskScore));
+                    email.put("threatPercent", Math.min(riskScore * 12, 100));
                     email.put("aiVerdict", aiResult.getVerdict());
                     email.put("aiConfidence", aiResult.getConfidence());
                     email.put("aiCategory", aiResult.getCategory());
                     email.put("aiExplanation", aiResult.getExplanation());
                     email.put("aiRecommendation", aiResult.getRecommendation());
+                    email.put("aiSummary", buildAiSummary(aiResult.getVerdict(), aiResult.getCategory(), reasons));
                     email.put("aiIndicators", aiResult.getIndicators());
 
                     emailResults.add(email);
@@ -893,7 +972,18 @@ public class GmailController {
     }
 
     @PostMapping("/gmail/report")
-    public Map<String, String> reportEmail(@RequestBody Map<String, String> body) throws Exception {
+    public Map<String, String> reportEmail(@RequestBody Map<String, String> body, HttpSession session) throws Exception {
+        String userId = (String) session.getAttribute("gmailUserId");
+
+        if (userId == null) {
+            Map<String, String> result = new HashMap<>();
+            result.put("message", "No Gmail session found. Please sign in first.");
+            result.put("caseId", "N/A");
+            return result;
+        }
+
+        var gmail = gmailService.buildGmailClient(userId);
+        
         String id = body.get("id");
 
         Message fullMessage = gmail.users().messages()
@@ -982,6 +1072,11 @@ public class GmailController {
             reasons.add("Domain does not match claimed institution");
         }
 
+        if (looksLikeBrandImpersonation(extractedDomain)) {
+            riskScore += 4;
+            reasons.add("Brand-like domain does not match official institution domain");
+        }
+
         Map<String, Object> report = reportService.reportEmail(
                 id, sender, subject, snippet, riskScore, reasons, false
         );
@@ -998,11 +1093,16 @@ public class GmailController {
     }
 
     @GetMapping("/gmail/profile")
-    public Map<String, Object> getProfile() {
+    public Map<String, Object> getProfile(HttpSession session) {
         Map<String, Object> result = new HashMap<>();
 
         try {
-            var userInfo = gmailService.getUserInfo("default-user");
+            String userId = (String) session.getAttribute("gmailUserId");
+            if (userId == null) {
+                throw new RuntimeException("No Gmail session found. Please sign in first.");
+            }
+            
+            var userInfo = gmailService.getUserInfo(userId);            
             result.put("name", userInfo.getName());
             result.put("email", userInfo.getEmail());
             result.put("picture", userInfo.getPicture());
@@ -1039,6 +1139,10 @@ public class GmailController {
     }
 
     private String classifyAttackPattern(List<String> reasons) {
+        if (reasons.contains("Domain does not match claimed institution")
+                || reasons.contains("Brand-like domain does not match official institution domain")) {
+            return "Institution Impersonation";
+        }
         if (reasons.contains("Credential request") || reasons.contains("Verification request")) {
             return "Credential Theft Attempt";
         }
@@ -1048,11 +1152,11 @@ public class GmailController {
         if (reasons.contains("Click bait") || reasons.contains("External link")) {
             return "Phishing Link Delivery";
         }
+        if (reasons.contains("Promotional scam bait")) {
+            return "Prize / Reward Scam";
+        }
         if (reasons.contains("Urgency")) {
             return "Urgency-Based Social Engineering";
-        }
-        if (reasons.contains("Domain does not match claimed institution")) {
-            return "Institution Impersonation";
         }
         return "General Phishing Activity";
     }
@@ -1150,9 +1254,9 @@ public class GmailController {
         if (text == null) {
             return null;
         }
-
+    
         String lower = text.toLowerCase();
-
+    
         if (lower.contains("ncb")) {
             return "NCB";
         }
@@ -1168,7 +1272,13 @@ public class GmailController {
         if (lower.contains("first global") || lower.contains("firstglobal")) {
             return "First Global";
         }
-
+        if (lower.contains("victoria mutual") || lower.contains("vmbs") || lower.contains("vm building society")) {
+            return "VMBS";
+        }
+        if (lower.contains("jn bank") || lower.contains("jamaica national")) {
+            return "JN Bank";
+        }
+    
         return null;
     }
 
@@ -1200,6 +1310,16 @@ public class GmailController {
                 && !domainMatchesAny(domain, parseDomains(firstglobalDomains))) {
             return true;
         }
+
+        if ((domain.contains("vmbs") || domain.contains("victoriamutual") || domain.contains("victoria-mutual"))
+            && !domainMatchesAny(domain, parseDomains(vmbsDomains))) {
+        return true;
+        }
+        
+        if ((domain.contains("jnbank") || domain.contains("jamaicanational") || domain.contains("jn-bank"))
+                && !domainMatchesAny(domain, parseDomains(jnbankDomains))) {
+            return true;
+        }
     
         return false;
     }
@@ -1217,6 +1337,8 @@ public class GmailController {
             case "JMMB" -> !domainMatchesAny(actualDomain, parseDomains(jmmbDomains));
             case "Sagicor" -> !domainMatchesAny(actualDomain, parseDomains(sagicorDomains));
             case "First Global" -> !domainMatchesAny(actualDomain, parseDomains(firstglobalDomains));
+            case "VMBS" -> !domainMatchesAny(actualDomain, parseDomains(vmbsDomains));
+            case "JN Bank" -> !domainMatchesAny(actualDomain, parseDomains(jnbankDomains));
             default -> false;
         };
     }
@@ -1235,5 +1357,57 @@ public class GmailController {
             }
         }
         return null;
+    }
+
+    private String getTrustBadge(String claimedInstitution, String detectedDomain, List<String> reasons) {
+        if (reasons.contains("Domain does not match claimed institution")
+                || reasons.contains("Brand-like domain does not match official institution domain")) {
+            return "Impersonation Detected";
+        }
+    
+        if (detectedDomain == null || detectedDomain.isBlank()) {
+            return "No Link Found";
+        }
+    
+        if (claimedInstitution != null) {
+            boolean matches = switch (claimedInstitution) {
+                case "NCB" -> domainMatchesAny(detectedDomain, parseDomains(ncbDomains));
+                case "Scotiabank" -> domainMatchesAny(detectedDomain, parseDomains(scotiabankDomains));
+                case "JMMB" -> domainMatchesAny(detectedDomain, parseDomains(jmmbDomains));
+                case "Sagicor" -> domainMatchesAny(detectedDomain, parseDomains(sagicorDomains));
+                case "First Global" -> domainMatchesAny(detectedDomain, parseDomains(firstglobalDomains));
+                case "VMBS" -> domainMatchesAny(detectedDomain, parseDomains(vmbsDomains));
+                case "JN Bank" -> domainMatchesAny(detectedDomain, parseDomains(jnbankDomains));
+                default -> false;
+            };
+    
+            return matches ? "Verified Domain" : "Unverified Domain";
+        }
+    
+        return "Unverified Domain";
+    }
+
+    private String buildAiSummary(String aiVerdict, String aiCategory, List<String> reasons) {
+        if ("HIGH".equalsIgnoreCase(aiVerdict)) {
+            return "This email is likely a phishing attempt and should not be trusted.";
+        }
+        if ("MEDIUM".equalsIgnoreCase(aiVerdict)) {
+            return "This email shows suspicious scam signals and should be verified carefully.";
+        }
+        if (reasons.contains("Brand-like domain does not match official institution domain")
+                || reasons.contains("Domain does not match claimed institution")) {
+            return "This email may be impersonating a trusted institution using a misleading link.";
+        }
+        return "This email currently appears low risk, but should still be verified through official channels.";
+    }
+
+    private boolean shouldSimulateBlock(int riskScore, String aiVerdict) {
+        return riskScore >= 6 || "HIGH".equalsIgnoreCase(aiVerdict);
+    }
+
+    private String getThreatLevelLabel(int riskScore) {
+        if (riskScore >= 6) return "HIGH";
+        if (riskScore >= 3) return "MEDIUM";
+        return "LOW";
     }
 }

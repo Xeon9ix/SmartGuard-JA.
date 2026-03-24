@@ -66,4 +66,10 @@ public class ReportService {
                 .filter(r -> Boolean.TRUE.equals(r.get("autoReported")))
                 .count();
     }
+
+    public void clearAllReports() {
+        reports.clear();
+        communityCounts.clear();
+        System.out.println("All reports cleared for new session.");
+    }
 }
